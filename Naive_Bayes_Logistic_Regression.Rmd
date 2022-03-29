@@ -5,26 +5,152 @@ date: "3/28/2022"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+Working through the class example. 
+
+
+prompt:
+
+The data ﬁle (available on UNM Learn and the Kaggle competition) contains four ﬁles:
+
+vocabulary.txt is a list of the words that may appear in documents. The line number is word’s d in other ﬁles. That is, the ﬁrst word (’archive’) has wordId 1, the second (’name’) has wordId 2, etc.
+
+newsgrouplabels.txt is a list of newsgroups from which a document may have come. Again, the line number corresponds to the label’s id, which is used in the .label ﬁles. The ﬁrst line (’alt.atheism’) has id 1, etc.
+
+training.csv Speciﬁes the counts for each of the words used in each of the documents. Each line contains 61190 elements. The first element is the document id, the elements 2 to 61189 are word counts for a vectorized representation of words (refer to the vocabulary for a mapping). The last element is the class of the document (20 different classes). All word/document pairs that do not appear in the ﬁle have count 0.
+
+testing.csv The same as training.csv except that it does not contain the last element.
+
+sample_solution.csv Contains a dummy solution file in the correct format
+
+```{r setup}
+library(tidyverse)
+library(tidymodels)
+library(klaR)
+library(discrim)
 ```
 
-## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r read in data}
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+vocab <-   
+  read_table("cs529-project-2-nb/vocabulary.txt", col_names = "Word") %>%
+  mutate(Word = paste0("Word_", Word)) %>%
+  pull(Word)
 
-```{r cars}
-summary(cars)
+newspaper_labels <- read_table("cs529-project-2-nb/newsgrouplabels.txt", col_names = c("Document_Class", "Newspaper"))
+
+
+# first column is an index, the next many are the words and the last column is the classification. 
+newspaper_data <- 
+  read_csv("cs529-project-2-nb/training.csv", col_names = c("Document_ID", vocab, "Document_Class")) %>%
+  left_join(newspaper_labels, by = "Document_Class") %>%
+  dplyr::select(-Document_Class)
+
+
+total_word_count <- 
+  newspaper_data %>%
+  dplyr::select(-Newspaper, -Document_ID) %>% 
+  colSums() 
+ 
+# i cant run all the words on my computers so im going to drop all of the rare words. 
+# droppin 23421 words (38% of the words)
+common_words <- 
+  tibble(word = names(total_word_count), count = total_word_count) %>%
+  filter(count > 100) %>%
+  pull(word)
+
+# removing rows without many words left. 
+
+newspaper_data_smaller <- 
+  newspaper_data %>%
+  dplyr::select(Document_ID, Newspaper, all_of(common_words)) %>%
+  pivot_longer(cols = starts_with("Word_"), names_to = "Words", values_to = "Counts") %>%
+  mutate(word_presence = Counts > 0) %>%
+  group_by(Document_ID) %>%
+  mutate(Total_words = sum(word_presence)) %>%
+  ungroup() %>%
+  filter(Total_words > 50) %>%
+  dplyr::select(-Total_words, -word_presence) %>%
+  pivot_wider(names_from = Words, values_from = Counts) %>%
+  dplyr::select(-Document_ID)
+  
+  
+
+
+#prediction <- read_csv("cs529-project-2-nb/testing.csv", col_names = c("Document_ID", vocab))
+
+
+
+
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
+```{r set up training sets }
+set.seed(134235)
+newspaper_data_smaller <- 
+  newspaper_data_smaller %>%
+  mutate(Newspaper = as.factor(Newspaper))
+newspaper_split <- initial_split(newspaper_data_smaller, strata = "Newspaper")
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+training_set <- training(newspaper_split)
+testing_set <- testing(newspaper_split)
+
+set.seed(243523)
+cv_folds <- 
+  vfold_cv(data = training_set, v = 5)
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+```{r building model }
+
+naive_bayes_model <- 
+  naive_Bayes() %>%
+  set_mode("classification") %>%
+  set_engine("klaR") 
+
+nb_recipe <- 
+  recipe(Newspaper ~., data = training_set) 
+  
+  
+```
+
+
+
+
+```{r workflow}
+
+np_workflow <- 
+  workflow() %>%
+  add_recipe(nb_recipe) %>%
+  add_model(naive_bayes_model)
+
+ np_workflow %>% 
+  fit(data = training_set)
+ 
+ 
+cross_fold_val <- 
+  naive_bayes_model %>%
+  fit(Newspaper ~., data = training_set)
+
+
+```
+
+
+```{r fit CV-folds}
+parsnip::set_dependency(c("klaR", "stats"))
+nb_fit <- 
+  np_workflow %>%
+  fit_resamples(cv_folds)
+
+
+
+collect_metrics(nb_fit)
+
+```
+
+
+
+
+
